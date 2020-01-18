@@ -1,6 +1,3 @@
-# --------------- Exercise 1 Solution ------------------
-# --------------- Amjad Bashiti - 315899013 ------------
-
 
 # a func to join list members next to each other
 def joinList(lst):

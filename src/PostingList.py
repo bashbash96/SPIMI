@@ -1,6 +1,3 @@
-# --------------- Exercise 1 Solution ------------------
-# --------------- Amjad Bashiti - 315899013 ------------
-
 
 class PostingList:
     def __init__(self, DocIDs, type):
