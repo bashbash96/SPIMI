@@ -40,7 +40,7 @@ class IndexReader:
             the given directory
             dir is the name of the directory in which all
             index files are located."""
-        if not(os.path.isdir(dir)):
+        if not (os.path.isdir(dir)):
             print('Error - Invalid directory name')
             exit(0)
 
@@ -56,14 +56,14 @@ class IndexReader:
         self.dictionary = self.getDictionaryFromFiles()
 
     def getDictionaryFromFiles(self):
-        DictionaryPath = PATH.format(self.indexDir, DICTIONARY_FILE_NAME )
+        DictionaryPath = PATH.format(self.indexDir, DICTIONARY_FILE_NAME)
         FCDataPath = PATH.format(self.indexDir, FC_DATA_FILE_NAME)
         DocsFreqPath = PATH.format(self.indexDir, DOCS_FREQ_FiLE_NAME)
-        PostingListsPointersPath = PATH.format(self.indexDir, POSTING_LISTS_POINTERS_FILE_NAME )
+        PostingListsPointersPath = PATH.format(self.indexDir, POSTING_LISTS_POINTERS_FILE_NAME)
         TermsFreqPointersPath = PATH.format(self.indexDir, TERMS_FREQ_POINTERS_FILE_NAME)
 
-        if not (os.path.isfile(DictionaryPath)) or not (os.path.isfile(FCDataPath))\
-                or not (os.path.isfile(DocsFreqPath)) or not (os.path.isfile(PostingListsPointersPath))\
+        if not (os.path.isfile(DictionaryPath)) or not (os.path.isfile(FCDataPath)) \
+                or not (os.path.isfile(DocsFreqPath)) or not (os.path.isfile(PostingListsPointersPath)) \
                 or not (os.path.isfile(TermsFreqPointersPath)):
             print('Error - Invalid File Path! Please Enter a Valid Path..')
             exit(0)
@@ -120,14 +120,14 @@ class IndexReader:
     def getNumberOfDocsFromDisk(self):
         encodeObj = PostingList([], VARIANT_ENCODE_TYPE)
 
-        NumberOfDocsPath = PATH.format(self.indexDir, DOCS_NUMBER_FILE_NAME )
+        NumberOfDocsPath = PATH.format(self.indexDir, DOCS_NUMBER_FILE_NAME)
 
         if not (os.path.isfile(NumberOfDocsPath)):
             print('Error - Invalid File Path! Please Enter a Valid Path..')
             exit(0)
 
         with open(NumberOfDocsPath, 'rb') as numberOfDocsFid:
-            numberOfDocsStream =  numberOfDocsFid.read()
+            numberOfDocsStream = numberOfDocsFid.read()
             numberOfDocsStream = encodeObj.variantDecode(numberOfDocsStream)
             numberOfDocs = numberOfDocsStream[0]
 
@@ -179,7 +179,6 @@ class IndexReader:
                 postingLists = postingListsFid.read(postingEndSeek - postingStartSeek)
             postingLists = encodeObj.variantDecode(postingLists)
 
-
         postingLists = getListFromGaps(postingLists)
 
         res = []
@@ -220,6 +219,8 @@ class IndexReader:
         self.dictionary[token][1] = len(self.postingLists)
         self.postingLists.append(postingList)
 
+        return postingList
+
     def getTokenCollectionFreq(self, token):
         sum = 0
         for pair in self.postingLists[self.dictionary[token][1]]:
@@ -238,17 +239,16 @@ class IndexReader:
         """
         if token in self.dictionary:
             if self.dictionary[token][1] != -1:
-                return self.getTokenPairs(token)
+                return self.postingLists[self.dictionary[token][1]]
             else:
-                self.getPostingListFromDisk(token)
-                return self.getTokenPairs(token)
+                return self.getPostingListFromDisk(token)
         return ()
 
-    def getTokenPairs(self, token):
-        res = ()
-        for pair in self.postingLists[self.dictionary[token][1]]:
-            res += ((pair[0], pair[1]),)
-        return res
+    # def getTokenPairs(self, token):
+    #     res = ()
+    #     for pair in self.postingLists[self.dictionary[token][1]]:
+    #         res += ((pair[0], pair[1]),)
+    #     return res
 
     def getNumberOfDocuments(self):
         """

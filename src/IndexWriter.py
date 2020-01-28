@@ -2,11 +2,12 @@ import os
 import shutil
 from Dictionary import Dictionary
 from PostingList import PostingList
+import psutil
 from multiprocessing import Process, Lock, Manager
+import gc
 
 SPLIT_SIGN = '*' * 80 + '\n'
-BLOCK_SIZE = 1147483647
-
+BLOCK_SIZE = 2 * 1024 * 1024 * 1024
 PATH = "{}\{}.txt"
 COMPRESSION_TYPE = 'FC'
 COMPRESSION_BLOCKS = 1000
@@ -20,20 +21,22 @@ TERMS_FREQ_POINTERS_FILE_NAME = 'TermsFreqPointers'
 POSTING_LISTS_POINTERS_FILE_NAME = 'PostingListsPointers'
 DOCS_NUMBER_FILE_NAME = 'NumberOfDocs'
 
+listOfLegalChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890'
+THRESHOLD = 16 * 1024 * 1024 * 1024
 
-def getMatches(phrase):
+
+def getMatches(phrase, ligalChars):
     """
     private function to get all the matches strings from the phrase according to
     list of legal chars and make them lower case
     :param phrase: string
     :return: array of all the matches
     """
-    listOfLegalChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890'
     match = []
 
     currWord = ''
     for i in range(len(phrase)):
-        if phrase[i] in listOfLegalChars:
+        if phrase[i] in ligalChars:
             currWord = currWord + phrase[i]
         elif currWord != '':
             match.append(currWord.lower())
@@ -71,38 +74,55 @@ class IndexWriter:
         if __name__ == 'IndexWriter' or __name__ == '__main__':
             self.indexInputFile = inputFile
             self.indexDir = dir
-            self.dictionary = {}
-            self.postingList = {}
             self.numberOfDocs = 0
             self.indexOutPutFile = ''
-
+            self.listOfLegalChars = self.getDictFromStr()
             self.currBlockNum = 1
 
             self.buildIndex()
+
+    def getDictFromStr(self):
+        dict = {}
+        for letter in listOfLegalChars:
+            dict[letter] = letter
+
+        return dict
 
     def buildIndex(self):
         """a private method to build the index on the disk..."""
         if not (os.path.isfile(self.indexInputFile)):
             print('Error - Invalid File Path! Please Enter a Valid Path..')
             exit(0)
-
+        process = psutil.Process(os.getpid())
         docID, currBlockNum, blocksList = 0, 1, []
-        #   Read all blocks according to Block Size
-        with open(self.indexInputFile, buffering=BLOCK_SIZE) as fid:
+        dictionary, postingLists, lines = {}, [], []
+        with open(self.indexInputFile) as fid:
             while True:
                 # start building new block
-                dictionary, postingLists = {}, []
-                lines = fid.readlines(BLOCK_SIZE)
-                if lines == []:
+
+                line = fid.readline()
+                if line == '\n':
+                    continue
+                if line == SPLIT_SIGN:
+                    docID += 1
+                    continue
+                if line == '' and len(dictionary) == 0:
                     break
+                lines = [line]
 
                 dictionary, docID, postingLists = self.addToDict(dictionary, docID, lines, postingLists)
 
-                self.writeOnDisk(dictionary, currBlockNum, postingLists)
-                blocksList.append(currBlockNum)
-                currBlockNum += 1
-                del dictionary
-                del postingLists
+                if psutil.virtual_memory().available < BLOCK_SIZE or lines[0] == '' or process.memory_info()[
+                    0] > THRESHOLD:
+                    self.writeOnDisk(dictionary, currBlockNum, postingLists)
+
+                    blocksList.append(currBlockNum)
+                    currBlockNum += 1
+                    del dictionary
+                    del postingLists
+                    del lines
+                    gc.collect()
+                    dictionary, postingLists = {}, []
 
         # we have finished reading all the file
         self.numberOfDocs = docID
@@ -181,8 +201,7 @@ class IndexWriter:
         numberOfDocsStream = encodeObj.getEncode([self.numberOfDocs])
         NumberOfDocsPath = PATH.format(self.indexDir, DOCS_NUMBER_FILE_NAME + str(self.indexOutPutFile))
 
-        with open(NumberOfDocsPath, 'ab+') as numberOfDocsFid:
-            numberOfDocsFid.write(numberOfDocsStream)
+        self.writeToFile(NumberOfDocsPath, numberOfDocsStream, 'ab+')
 
     def deleteFromDisk(self, blockNum):
         """
@@ -213,7 +232,6 @@ class IndexWriter:
         if os.path.isfile(TermsFreqPointersPath):
             os.remove(TermsFreqPointersPath)
 
-
     def mergeBlocks(self, blocksList, dict, lock):
         """
         method to merge blocks, it merges two blocks at one time till the number of blocks on
@@ -235,15 +253,12 @@ class IndexWriter:
                 block1 = blocksList.pop(i)
                 block2 = blocksList.pop(i)
                 blocksList.insert(i, currBlockNum)
-                dict1 = self.getDictionaryFromFiles(block1)
-                dict2 = self.getDictionaryFromFiles(block2)
+                dict1, terms1 = self.getDictionaryFromFiles(block1)
+                dict2, terms2 = self.getDictionaryFromFiles(block2)
                 dictRes = {}
 
                 postingListsPointers = []
                 termsFreqPointers = []
-
-                terms1, docsFreq1 = self.getDetailsFromDict(dict1)
-                terms2, docsFreq2 = self.getDetailsFromDict(dict2)
 
                 TermsFreqPath = PATH.format(self.indexDir, TERMS_FREQ_FILE_NAME + str(currBlockNum))
                 PostingListsPath = PATH.format(self.indexDir, POSTING_LISTS_FILE_NAME + str(currBlockNum))
@@ -262,16 +277,20 @@ class IndexWriter:
 
                         if firstTerm < secondTerm:
                             dictRes[firstTerm] = [dict1[firstTerm][0]]
-                            currPostingList, currTermsFreq = self.getSpecifTokenPostingList(block1, firstTerm, dict1, terms1, p1)
+                            currPostingList, currTermsFreq = self.getSpecifTokenPostingList(block1, firstTerm, dict1,
+                                                                                            terms1, p1)
                             p1 += 1
                         elif secondTerm < firstTerm:
                             dictRes[secondTerm] = [dict2[secondTerm][0]]
-                            currPostingList, currTermsFreq = self.getSpecifTokenPostingList(block2, secondTerm, dict2, terms2, p2)
+                            currPostingList, currTermsFreq = self.getSpecifTokenPostingList(block2, secondTerm, dict2,
+                                                                                            terms2, p2)
                             p2 += 1
                         else:
                             dictRes[firstTerm] = [dict1[firstTerm][0] + dict2[secondTerm][0]]
-                            firstPostingList, firstTermsFreq = self.getSpecifTokenPostingList(block1, firstTerm, dict1, terms1, p1)
-                            secondPosting, secondTerms = self.getSpecifTokenPostingList(block2, secondTerm, dict2, terms2, p2)
+                            firstPostingList, firstTermsFreq = self.getSpecifTokenPostingList(block1, firstTerm, dict1,
+                                                                                              terms1, p1)
+                            secondPosting, secondTerms = self.getSpecifTokenPostingList(block2, secondTerm, dict2,
+                                                                                        terms2, p2)
 
                             firstPostingList.extend(secondPosting)
                             firstTermsFreq.extend(secondTerms)
@@ -294,11 +313,11 @@ class IndexWriter:
                         termsFreqpointer += len(currTermFreqStream)
 
                     while p1 < len(terms1):
-
                         firstTerm = terms1[p1]
                         dictRes[firstTerm] = [dict1[firstTerm][0]]
 
-                        currPostingList, currTermsFreq = self.getSpecifTokenPostingList(block1, firstTerm, dict1, terms1, p1)
+                        currPostingList, currTermsFreq = self.getSpecifTokenPostingList(block1, firstTerm, dict1,
+                                                                                        terms1, p1)
 
                         currEncode = PostingList(currPostingList, VARIANT_ENCODE_TYPE)
                         currPostingListStream = currEncode.GetList()
@@ -316,11 +335,11 @@ class IndexWriter:
                         p1 += 1
 
                     while p2 < len(terms2):
-
                         secondTerm = terms2[p2]
                         dictRes[secondTerm] = [dict2[secondTerm][0]]
 
-                        currPostingList, currTermsFreq = self.getSpecifTokenPostingList(block2, secondTerm, dict2, terms2, p2)
+                        currPostingList, currTermsFreq = self.getSpecifTokenPostingList(block2, secondTerm, dict2,
+                                                                                        terms2, p2)
 
                         currEncode = PostingList(currPostingList, VARIANT_ENCODE_TYPE)
                         currPostingListStream = currEncode.GetList()
@@ -350,7 +369,6 @@ class IndexWriter:
 
         dict['return'] = blocksList[0]
 
-
     def writeMergeOnDisk(self, dictionary, blockNum, postingListsPointersList, termsFreqPointersList):
         """
         private method to write the result block of merging on disk
@@ -374,11 +392,9 @@ class IndexWriter:
         FCData = self.getFCDataFromDict(FCObj.dict)
         FCDataStream = encodeObj.getEncode(FCData)
 
-        with open(DictionaryPath, 'a+') as dictFid, open(FCDataPath, 'ab+') as FCDataFid, open(DocsFreqPath,
-                                                                                               'ab+') as docsFreqFid:
-            dictFid.write(dictionaryStream)
-            FCDataFid.write(FCDataStream)
-            docsFreqFid.write(docsFreqStream)
+        self.writeToFile(DictionaryPath, dictionaryStream, 'a+')
+        self.writeToFile(FCDataPath, FCDataStream, 'ab+')
+        self.writeToFile(DocsFreqPath, docsFreqStream, 'ab+')
 
         postingPointersEncode = PostingList(postingListsPointersList, VARIANT_ENCODE_TYPE)
         termsFreqPointersEncode = PostingList(termsFreqPointersList, VARIANT_ENCODE_TYPE)
@@ -386,10 +402,8 @@ class IndexWriter:
         postingListsPointersStream = postingPointersEncode.GetList()
         termsFreqPointersStream = termsFreqPointersEncode.GetList()
 
-        with open(PostingListsPointersPath, 'ab+') as postingListsPointersFid, open(TermsFreqPointersPath,
-                                                                                    'ab+') as termsFreqPointersFid:
-            postingListsPointersFid.write(postingListsPointersStream)
-            termsFreqPointersFid.write(termsFreqPointersStream)
+        self.writeToFile(PostingListsPointersPath, postingListsPointersStream, 'ab+')
+        self.writeToFile(TermsFreqPointersPath, termsFreqPointersStream, 'ab+')
 
     def getSpecifTokenPostingList(self, block, token, dict, terms, idx):
         """
@@ -431,14 +445,12 @@ class IndexWriter:
 
             postingLists = getListFromGaps(postingLists)
 
-        postingsRes, termsRes =[], []
+        postingsRes, termsRes = [], []
         for i in range(dict[token][0]):
             postingsRes.append(postingLists[i])
             termsRes.append(termsFreq[i])
 
-
         return postingsRes, termsRes
-
 
     def getFCDataFromFile(self, lst):
         """
@@ -506,7 +518,7 @@ class IndexWriter:
         for i, term in enumerate(terms):
             dict[term] = [docsFreq[i], -1, postingListsPointers[i], termsFreqPointers[i]]
 
-        return dict
+        return dict, terms
 
     def getFCDataFromDict(self, dict):
         """
@@ -539,6 +551,17 @@ class IndexWriter:
             docsFreq.append(dictionary[term][0])
 
         return terms, docsFreq
+
+    def writeToFile(self, path, stream, type):
+        """
+        private method to write stream to a specific file
+        :param path: path of the file
+        :param stream: data to write in the file
+        :param type: type of the file
+        :return:
+        """
+        with open(path, type) as fid:
+            fid.write(stream)
 
     def writeOnDisk(self, dictionary, blockNum, postingLists):
         """
@@ -582,11 +605,9 @@ class IndexWriter:
         postingListsStream = bytearray()
         termsFreqStream = bytearray()
 
-        with open(DictionaryPath, 'a+') as dictFid, open(FCDataPath, 'ab+') as FCDataFid, open(DocsFreqPath,
-                                                                                               'ab+') as docsFreqFid:
-            dictFid.write(dictionaryStream)
-            FCDataFid.write(FCDataStream)
-            docsFreqFid.write(docsFreqStream)
+        self.writeToFile(DictionaryPath, dictionaryStream, 'a+')
+        self.writeToFile(FCDataPath, FCDataStream, 'ab+')
+        self.writeToFile(DocsFreqPath, docsFreqStream, 'ab+')
 
         postingListsPointer, termsFreqPointer = 0, 0
         postingListsPointersList, termsFreqPointersList = [], []
@@ -616,14 +637,11 @@ class IndexWriter:
         postingListsPointersStream = postingPointersEncode.GetList()
         termsFreqPointersStream = termsFreqPointersEncode.GetList()
 
-        with open(PostingListsPath, 'ab+') as  postingListsFid, open(TermsFreqPath, 'ab+') as termsFreqFid:
-            postingListsFid.write(postingListsStream)
-            termsFreqFid.write(termsFreqStream)
+        self.writeToFile(PostingListsPointersPath, postingListsPointersStream, 'ab+')
+        self.writeToFile(TermsFreqPointersPath, termsFreqPointersStream, 'ab+')
 
-        with open(PostingListsPointersPath, 'ab+') as postingListsPointersFid, open(TermsFreqPointersPath,
-                                                                                    'ab+') as termsFreqPointersFid:
-            postingListsPointersFid.write(postingListsPointersStream)
-            termsFreqPointersFid.write(termsFreqPointersStream)
+        self.writeToFile(PostingListsPath, postingListsStream, 'ab+')
+        self.writeToFile(TermsFreqPath, termsFreqStream, 'ab+')
 
     def addToDict(self, dictionary, docID, lines, postingLists):
         """
@@ -636,10 +654,7 @@ class IndexWriter:
         """
 
         for line in lines:
-            if line == SPLIT_SIGN:
-                docID += 1
-                continue
-            terms = getMatches(line)
+            terms = getMatches(line, self.listOfLegalChars)
             for term in terms:
                 if not (term in dictionary):
                     postingLists.append([[docID, 1]])

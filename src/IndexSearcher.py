@@ -1,15 +1,15 @@
 import math
-from IndexReader import IndexReader
+
+listOfLegalChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890'
 
 
-def getMatches(phrase):
+def getMatches(phrase, listOfLegalChars):
     """
     private function to get all the matches strings from the phrase according to
     list of legal chars and make them lower case
     :param phrase: string
     :return: array of all the matches
     """
-    listOfLegalChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890'
     match = []
 
     currWord = ''
@@ -35,13 +35,21 @@ class IndexSearcher:
         self.dictionary = {}
         self.postingLists = []
         self.pairsPostingLists = []
+        self.listOfLegalChars = self.getDictFromStr()
+
+    def getDictFromStr(self):
+        dict = {}
+        for letter in listOfLegalChars:
+            dict[letter] = letter
+
+        return dict
 
     def vectorSpaceSearch(self, query, k):
         """Returns a tupple containing the id-s of the k most highly ranked reviews
          for the given query, using the vector space ranking function lnn.ltc
          (using the SMART notation). The id-s should be sorted by the ranking."""
 
-        listOfTerms = getMatches(query)
+        listOfTerms = getMatches(query, self.listOfLegalChars)
 
         if listOfTerms == []:
             return ()
@@ -174,7 +182,7 @@ class IndexSearcher:
         return 0
 
     def getListOfDocIDs(self, token):
-        pairs = self.indexReader.getDocsWithToken(token)
+        pairs = self.indexReader.getPostingListFromDisk(token)
         IDs = []
         sum = 0
         for pair in pairs:
@@ -192,4 +200,3 @@ class IndexSearcher:
     def getIDF(self, term):
 
         return math.log(self.numOfDocs / self.dictionary[term][0], 10)
-
